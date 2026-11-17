@@ -2,6 +2,7 @@ const STATE_KEY = 'privateRoutesIdentities';
 const PRIVATE_STATE_KEY = 'privateRoutesState';
 const API_KEY = 'privateRoutesIdentity';
 const getContext = () => globalThis.SillyTavern?.getContext?.();
+const decisionCache = new Map();
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -189,31 +190,73 @@ async function classifyInput(context, input, state) {
     }
 }
 
-async function confirmIdentityEvent(event, state) {
-    const name = String(event.name || event.identity || '新身份').trim();
-    const safeName = name.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-    const isReveal = event.type === 'reveal';
+async function confirmIdentityEvents(events) {
+    const names = [...new Set(events.map(event => String(event.name || event.identity || '新身份').trim()).filter(Boolean))];
+    const isReveal = events[0]?.type === 'reveal';
     const title = isReveal ? '确认揭露身份' : '确认创建新身份';
+    const safeNames = names.map(name => name.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character])));
     const body = isReveal
-        ? `检测到可能揭露身份。<br><br><b>${safeName}</b> 将与“你”合并为同一个身份。`
-        : `检测到可能创建新身份。<br><br>身份名称：<b>${safeName}</b><br>确认后本轮将使用这个身份。`;
+        ? `检测到可能揭露身份。<br><br>${safeNames.map(name => `<b>${name}</b>`).join('、')} 将与“你”合并为同一个身份。`
+        : `检测到可能创建新身份。<br><br>身份名称：${safeNames.map(name => `<b>${name}</b>`).join('、')}<br>确认后本轮将使用这些身份。`;
     if (globalThis.Popup?.show?.confirm) return Boolean(await globalThis.Popup.show.confirm(title, body));
-    return globalThis.confirm ? globalThis.confirm(`${title}\n\n${name}`) : false;
+    return globalThis.confirm ? globalThis.confirm(`${title}\n\n${names.join('、')}`) : false;
 }
 
-async function applyIdentityEvents(state, events) {
-    for (const event of events) {
+function uniqueEvents(events) {
+    const seen = new Set();
+    return events.filter(event => {
         const name = String(event.name || event.identity || '').trim();
-        if (event.type === 'create') {
-            if (!await confirmIdentityEvent(event, state)) continue;
-            const id = ensureAlias(state, name);
-            if (event.activate !== false) state.active = id;
-        } else if (event.type === 'activate') {
-            const identity = identityByName(state, name);
-            if (identity) state.active = canonicalId(state, identity.id);
-        } else if (event.type === 'reveal') {
-            const identity = identityByName(state, name);
-            if (identity && await confirmIdentityEvent(event, state)) mergeIntoUser(state, identity);
+        const key = `${event.type}:${name}`;
+        if (!name || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+async function applyIdentityEvents(state, events, cacheKey) {
+    const unique = uniqueEvents(events);
+    const createEvents = unique.filter(event => event.type === 'create');
+    const revealEvents = unique.filter(event => event.type === 'reveal');
+    const activateEvents = unique.filter(event => event.type === 'activate');
+
+    const newCreates = createEvents.filter(event => !identityByName(state, String(event.name || '').trim()));
+    if (newCreates.length) {
+        const decisionKey = `${cacheKey}:create:${newCreates.map(event => String(event.name).trim()).sort().join('|')}`;
+        let approved = decisionCache.get(decisionKey);
+        if (approved === undefined) {
+            approved = await confirmIdentityEvents(newCreates);
+            decisionCache.set(decisionKey, approved);
+        }
+        if (approved) {
+            for (const event of newCreates) {
+                const id = ensureAlias(state, String(event.name).trim());
+                if (event.activate !== false) state.active = id;
+            }
+        }
+    }
+    for (const event of createEvents.filter(event => !newCreates.includes(event))) {
+        const identity = identityByName(state, String(event.name || '').trim());
+        if (identity && event.activate !== false) state.active = canonicalId(state, identity.id);
+    }
+    for (const event of activateEvents) {
+        const identity = identityByName(state, String(event.name || event.identity || '').trim());
+        if (identity) state.active = canonicalId(state, identity.id);
+    }
+    if (revealEvents.length) {
+        const revealTargets = revealEvents.filter(event => identityByName(state, String(event.name || event.identity || '').trim()));
+        if (revealTargets.length) {
+            const decisionKey = `${cacheKey}:reveal:${revealTargets.map(event => String(event.name || event.identity).trim()).sort().join('|')}`;
+            let approved = decisionCache.get(decisionKey);
+            if (approved === undefined) {
+                approved = await confirmIdentityEvents(revealTargets);
+                decisionCache.set(decisionKey, approved);
+            }
+            if (approved) {
+                for (const event of revealTargets) {
+                    const identity = identityByName(state, String(event.name || event.identity).trim());
+                    mergeIntoUser(state, identity);
+                }
+            }
         }
     }
 }
@@ -276,7 +319,8 @@ async function prepareTurn({ context, input, playerName } = {}) {
     if (!context) return null;
     const state = stateFor(context);
     const events = await classifyInput(context, input, state);
-    await applyIdentityEvents(state, events);
+    const chatKey = context.chatId || context.groupId || 'current';
+    await applyIdentityEvents(state, events, `${chatKey}:${String(input || '').trim()}`);
     const active = canonicalId(state, state.active || 'user');
     state.active = active;
     const identity = state.identities[active] || state.identities.user;
