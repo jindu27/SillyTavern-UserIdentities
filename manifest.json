@@ -4,7 +4,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "jindu27",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minimum_client_version": "1.19.0",
   "auto_update": false,
   "homePage": "https://github.com/jindu27/SillyTavern-UserIdentities"
