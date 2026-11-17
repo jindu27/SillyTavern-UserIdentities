@@ -20,6 +20,18 @@ function baseState(playerName) {
     };
 }
 
+function legacyPrivateState(context) {
+    const current = context.chatMetadata?.[PRIVATE_STATE_KEY];
+    const currentSource = current?.affinity && typeof current.affinity === 'object' ? current.affinity : current;
+    if (Number.isFinite(Number(currentSource?.['$user']))) return current;
+    for (let index = (context.chat?.length || 0) - 1; index >= 0; index--) {
+        const turnState = context.chat[index]?.extra?.privateRoutesTurn?.state;
+        const source = turnState?.affinity && typeof turnState.affinity === 'object' ? turnState.affinity : turnState;
+        if (Number.isFinite(Number(source?.['$user']))) return turnState;
+    }
+    return null;
+}
+
 function stateFor(context) {
     const metadata = context.chatMetadata ??= {};
     const state = metadata[STATE_KEY] && typeof metadata[STATE_KEY] === 'object'
@@ -32,6 +44,22 @@ function stateFor(context) {
     state.identities.user.displayName = context.name1 || state.identities.user.displayName || '你';
     state.identities.user.canonical = 'user';
     state.scores.user ??= { affinity: 0, familiarity: 0, tension: 0, friction: { issue: '', repeats: 0 } };
+    if (!state.legacyMigrated || state.legacyMigrationVersion !== 2) {
+        const privateState = legacyPrivateState(context);
+        const source = privateState?.affinity && typeof privateState.affinity === 'object' ? privateState.affinity : privateState;
+        const legacyId = Number.isFinite(Number(source?.['$user'])) ? '$user' : (Number.isFinite(Number(source?.user)) ? 'user' : null);
+        if (legacyId) {
+            const oldScore = Number(source[legacyId]);
+            if (Number.isFinite(oldScore)) state.scores.user.affinity = oldScore;
+            const oldFamiliarity = Number(privateState?.familiarity?.[legacyId]);
+            const oldTension = Number(privateState?.tension?.[legacyId]);
+            if (Number.isFinite(oldFamiliarity)) state.scores.user.familiarity = oldFamiliarity;
+            if (Number.isFinite(oldTension)) state.scores.user.tension = oldTension;
+            if (privateState?.friction?.[legacyId]) state.scores.user.friction = clone(privateState.friction[legacyId]);
+        }
+        state.legacyMigrated = true;
+        state.legacyMigrationVersion = 2;
+    }
     metadata[STATE_KEY] = state;
     return state;
 }
