@@ -1,0 +1,11 @@
+#private-routes-identities {
+    display: inline-flex;
+    align-items: center;
+    margin: 0.2rem 0.65rem;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.82em;
+}
+
+#private-routes-identities[hidden] {
+    display: none !important;
+}

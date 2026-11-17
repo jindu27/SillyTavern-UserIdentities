@@ -1,0 +1,11 @@
+{
+  "display_name": "用户身份 · Narrative Identities",
+  "loading_order": 5,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "jindu27",
+  "version": "0.1.0",
+  "minimum_client_version": "1.19.0",
+  "auto_update": false,
+  "homePage": "https://github.com/jindu27/SillyTavern-UserIdentities"
+}
