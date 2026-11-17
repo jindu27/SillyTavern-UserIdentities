@@ -370,11 +370,20 @@ function commitTurn({ context, turn, playerRoute } = {}) {
     context.chatMetadata[STATE_KEY] = state;
 }
 
+function displayNameFor(id) {
+    const context = getContext();
+    if (!context || !id) return '';
+    const state = stateFor(context);
+    const canonical = canonicalId(state, id);
+    return state.identities[canonical]?.displayName || '';
+}
+
 globalThis[API_KEY] = {
     prepareTurn,
     commitTurn,
     statusBlock,
     statusRows,
+    displayNameFor,
     getState() {
         const context = getContext();
         return context ? clone(stateFor(context)) : null;
