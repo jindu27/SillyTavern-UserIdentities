@@ -140,6 +140,84 @@ function applyNarrative(state, text) {
     if (/(?:切回|换回|回到)\s*(?:本号|主号|原来的身份|本人)/u.test(value)) state.active = 'user';
 }
 
+function identityByName(state, value) {
+    if (!value) return null;
+    if (value === '你' || value === '本号' || value === '主号' || value === '本人' || value === 'user') return state.identities.user;
+    return Object.values(state.identities).find(identity => identity.id === value || identity.displayName === value) || null;
+}
+
+function mergeIntoUser(state, target) {
+    if (!target || target.id === 'user') return false;
+    const source = scoreFor(state, target.id);
+    const user = scoreFor(state, 'user');
+    state.scores.user = {
+        affinity: Math.max(user.affinity, source.affinity),
+        familiarity: Math.max(user.familiarity, source.familiarity),
+        tension: Math.max(user.tension, source.tension),
+        friction: source.repeats > user.repeats ? source.friction : user.friction,
+    };
+    target.canonical = 'user';
+    state.active = 'user';
+    return true;
+}
+
+function decodeClassifier(raw) {
+    let text = String(raw || '').trim();
+    const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fenced) text = fenced[1];
+    const value = JSON.parse(text);
+    return Array.isArray(value?.identity_events) ? value.identity_events : [];
+}
+
+async function classifyInput(context, input, state) {
+    if (!String(input || '').trim() || typeof context.generateRawData !== 'function') return [];
+    const identities = Object.values(state.identities).map(identity => ({ id: identity.id, name: identity.displayName, canonical: identity.canonical }));
+    const systemPrompt = '你是酒馆剧情中的用户身份事件识别器。只返回有效 JSON，不要解释。只识别本条用户输入中明确发生的身份创建、切换或揭露。普通提到账号、名字或假设情节不算事件。格式必须是 {"identity_events":[{"type":"create|activate|reveal","name":"身份名","activate":true}]}。create 需要 name，activate 用于切换已有身份，reveal 表示把身份揭露为用户本体。';
+    const prompt = '当前已有身份（JSON）\n' + JSON.stringify(identities) + '\n\n用户本条输入\n' + String(input).replaceAll('{{', '{\u200B{');
+    try {
+        const data = await context.generateRawData({ systemPrompt, prompt, api: context.mainApi });
+        const raw = context.extractMessageFromData(data, context.mainApi);
+        return decodeClassifier(raw).filter(event => {
+            if (!event || !['create', 'activate', 'reveal'].includes(event.type)) return false;
+            if (event.type === 'create' && (typeof event.name !== 'string' || !event.name.trim())) return false;
+            if ((event.type === 'activate' || event.type === 'reveal') && typeof (event.name || event.identity) !== 'string') return false;
+            return true;
+        }).slice(0, 2);
+    } catch (error) {
+        console.warn('[UserIdentities] identity preflight failed', error);
+        return [];
+    }
+}
+
+async function confirmIdentityEvent(event, state) {
+    const name = String(event.name || event.identity || '新身份').trim();
+    const safeName = name.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+    const isReveal = event.type === 'reveal';
+    const title = isReveal ? '确认揭露身份' : '确认创建新身份';
+    const body = isReveal
+        ? `检测到可能揭露身份。<br><br><b>${safeName}</b> 将与“你”合并为同一个身份。`
+        : `检测到可能创建新身份。<br><br>身份名称：<b>${safeName}</b><br>确认后本轮将使用这个身份。`;
+    if (globalThis.Popup?.show?.confirm) return Boolean(await globalThis.Popup.show.confirm(title, body));
+    return globalThis.confirm ? globalThis.confirm(`${title}\n\n${name}`) : false;
+}
+
+async function applyIdentityEvents(state, events) {
+    for (const event of events) {
+        const name = String(event.name || event.identity || '').trim();
+        if (event.type === 'create') {
+            if (!await confirmIdentityEvent(event, state)) continue;
+            const id = ensureAlias(state, name);
+            if (event.activate !== false) state.active = id;
+        } else if (event.type === 'activate') {
+            const identity = identityByName(state, name);
+            if (identity) state.active = canonicalId(state, identity.id);
+        } else if (event.type === 'reveal') {
+            const identity = identityByName(state, name);
+            if (identity && await confirmIdentityEvent(event, state)) mergeIntoUser(state, identity);
+        }
+    }
+}
+
 function mergedIds(state, id) {
     const canonical = canonicalId(state, id);
     return Object.values(state.identities)
@@ -194,10 +272,11 @@ function statusBlock({ state, playerRoute } = {}) {
     return ['### 用户身份关系', '', ...rows, '', `当前身份：**${activeName}**`].join('\n');
 }
 
-function prepareTurn({ context, input, playerName } = {}) {
+async function prepareTurn({ context, input, playerName } = {}) {
     if (!context) return null;
     const state = stateFor(context);
-    applyNarrative(state, input);
+    const events = await classifyInput(context, input, state);
+    await applyIdentityEvents(state, events);
     const active = canonicalId(state, state.active || 'user');
     state.active = active;
     const identity = state.identities[active] || state.identities.user;
