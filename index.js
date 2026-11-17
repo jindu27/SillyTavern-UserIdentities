@@ -170,8 +170,16 @@ function decodeClassifier(raw) {
     return Array.isArray(value?.identity_events) ? value.identity_events : [];
 }
 
+function mayContainIdentityIntent(text, state) {
+    const value = String(text || '');
+    const keywords = ['小号', '马甲', '账号', '身份', '注册', '创建', '新建', '切换', '换回', '揭露', '坦白', '好友申请', '联系'];
+    return keywords.some(keyword => value.includes(keyword))
+        || Object.values(state.identities).some(identity => identity.id !== 'user' && value.includes(identity.displayName));
+}
+
 async function classifyInput(context, input, state) {
     if (!String(input || '').trim() || typeof context.generateRawData !== 'function') return [];
+    if (!mayContainIdentityIntent(input, state)) return [];
     const identities = Object.values(state.identities).map(identity => ({ id: identity.id, name: identity.displayName, canonical: identity.canonical }));
     const systemPrompt = '你是酒馆剧情中的用户身份事件识别器。只返回有效 JSON，不要解释。只识别本条用户输入中明确发生的身份创建、切换或揭露。普通提到账号、名字或假设情节不算事件。格式必须是 {"identity_events":[{"type":"create|activate|reveal","name":"身份名","activate":true}]}。create 需要 name，activate 用于切换已有身份，reveal 表示把身份揭露为用户本体。';
     const prompt = '当前已有身份（JSON）\n' + JSON.stringify(identities) + '\n\n用户本条输入\n' + String(input).replaceAll('{{', '{\u200B{');
@@ -272,6 +280,15 @@ function privateStateOverride(context, state, route) {
     const current = context.chatMetadata?.[PRIVATE_STATE_KEY] && typeof context.chatMetadata[PRIVATE_STATE_KEY] === 'object'
         ? clone(context.chatMetadata[PRIVATE_STATE_KEY])
         : { version: 2, affinity: {}, familiarity: {}, tension: {}, friction: {}, obsession: null };
+    if (!current.obsession) {
+        for (let index = (context.chat?.length || 0) - 1; index >= 0; index--) {
+            const historicalObsession = context.chat[index]?.extra?.privateRoutesTurn?.state?.obsession;
+            if (historicalObsession) {
+                current.obsession = historicalObsession;
+                break;
+            }
+        }
+    }
     const score = scoreFor(state, route.id);
     current.affinity ??= {};
     current.familiarity ??= {};
