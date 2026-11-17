@@ -315,6 +315,21 @@ function statusBlock({ state, playerRoute } = {}) {
     return ['### 用户身份关系', '', ...rows, '', `当前身份：**${activeName}**`].join('\n');
 }
 
+function statusRows({ state, playerRoute } = {}) {
+    const context = getContext();
+    if (!context) return [];
+    const identityState = stateFor(context);
+    const visible = Object.values(identityState.identities).filter(identity => canonicalId(identityState, identity.id) === identity.id);
+    const currentId = playerRoute?.id || identityState.active;
+    return visible.map(identity => {
+        const routeIds = mergedIds(identityState, identity.id);
+        const score = identity.id === currentId && state?.affinity?.[currentId] !== undefined
+            ? Number(state.affinity[currentId]) || 0
+            : Math.max(...routeIds.map(id => scoreFor(identityState, id).affinity), 0);
+        return { id: identity.id, name: identity.displayName, score };
+    });
+}
+
 async function prepareTurn({ context, input, playerName } = {}) {
     if (!context) return null;
     const state = stateFor(context);
@@ -359,6 +374,7 @@ globalThis[API_KEY] = {
     prepareTurn,
     commitTurn,
     statusBlock,
+    statusRows,
     getState() {
         const context = getContext();
         return context ? clone(stateFor(context)) : null;
